@@ -7,6 +7,7 @@ import { readNodeStatus, formatStatusSummary } from './status.js'
 import { selectUsableBatch, formatBatchSummary } from './postage.js'
 import { loadFeedIdentity, readLatestEntry, appendReference } from './feed.js'
 import { publishArchive } from './publish.js'
+import { recoverArchiveToDirectory } from './recovery.js'
 
 const USAGE = `Tsering Archive CLI (foundation)
 
@@ -19,6 +20,7 @@ Usage:
   node src/cli.js feed:append <ref> Append 64-hex Swarm ref to feed (needs Bee + key + postage)
   node src/cli.js publish <archive> Publish an archive file/dir to Swarm + feed (needs Bee + key + postage)
   node src/cli.js update <archive>  Publish a new archive version to Swarm + feed (same safe append)
+  node src/cli.js recover <owner> <topic> <outdir>  Recover every folio from owner+topic (needs Bee; no key, no postage)
   node src/cli.js help              Show this help
 `
 
@@ -147,6 +149,58 @@ async function main() {
       console.log(result.batchId)
       console.log('')
       console.log(`Items: ${result.itemCount}`)
+    } catch (error) {
+      console.error(`Error: ${error?.message ?? error}`)
+      if (error?.partial) {
+        console.error(`Partial state: ${JSON.stringify(error.partial, null, 2)}`)
+      }
+      process.exitCode = 1
+    }
+    return
+  }
+
+  if (command === 'recover') {
+    const [, owner, topic, outputDir] = process.argv.slice(2)
+    if (!owner || !topic || !outputDir) {
+      console.error('Usage: node src/cli.js recover <owner> <topic> <output-directory>')
+      console.error('Hint: run `node src/cli.js feed` to see the tracked public identity.')
+      process.exitCode = 1
+      return
+    }
+    // NOTE: recovery is stranger-safe by construction — no FEED_PRIVATE_KEY
+    // and no POSTAGE_BATCH_ID are loaded here. Reads are free and unsigned.
+    const { beeApiUrl } = loadConfig()
+    const bee = createBeeClient(beeApiUrl)
+    console.log('Tsering Archive Recovery')
+    console.log('')
+    console.log(`Owner: ${owner}`)
+    console.log(`Topic: ${topic}`)
+    console.log('')
+    console.log('Resolving latest feed entry...')
+    try {
+      const result = await recoverArchiveToDirectory({
+        bee,
+        owner,
+        topic,
+        outputDir,
+        onItem: ({ index, total, name }) => {
+          if (index === 0) {
+            console.log('')
+            console.log('Recovering folios...')
+          }
+          console.log(`[${index + 1}/${total}] ${name}`)
+        },
+      })
+      console.log('')
+      console.log(`Archive reference: ${result.archiveReference}`)
+      console.log('')
+      console.log('Downloading manifest...')
+      console.log(`Manifest version: ${result.manifest.version}`)
+      console.log(`Items: ${result.items.length}`)
+      console.log('')
+      console.log('Recovery complete.')
+      console.log(`Recovered: ${result.recoveredCount}/${result.items.length}`)
+      console.log(`Output: ${result.outputDir}`)
     } catch (error) {
       console.error(`Error: ${error?.message ?? error}`)
       if (error?.partial) {

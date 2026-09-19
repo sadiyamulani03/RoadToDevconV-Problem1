@@ -3,11 +3,11 @@
 Minimal, auditable foundation for a censorship-resistant testimony archive on
 [ETHSwarm](https://ethswarm.org), built on `bee-js` **v13** (namespaced API).
 
-> Phase 3 scope: archive manifest + publication workflow (file → Swarm refs →
-> manifest → manifest ref → feed append by reference). Network tests report
-> BLOCKED instead of pretending PASS — no live Bee node was reachable during
-> this phase, so real publication is implemented and tested offline but NOT
-> yet verified against a live network.
+> Phase 4 scope: independent stranger recovery (owner + topic → latest feed
+> entry → manifest → every folio, read-only, no private key, no postage).
+> Network tests report BLOCKED instead of pretending PASS — no live Bee node
+> was reachable during this phase, so live stranger recovery is implemented
+> and offline-tested but NOT yet verified against a live network.
 
 ## Problem
 
@@ -40,11 +40,13 @@ src/
   publish.js    archive input collection, postage resolution, content +
                 manifest upload via bee.data.upload, publish/update through
                 the Phase 2 safe feed append (Phase 3)
-  recovery.js   live fetch wrapper + pure summary formatter
+  recovery.js   stranger recovery: recoverArchive / recoverArchiveToDirectory
+                (owner+topic → feed → manifest → every folio; read-only,
+                key-free, path-safe) + pure summary formatter
   postage.js    pure batch select/format over real stamp data
   status.js     live node status aggregation (status.* + connectivity.*)
   cli.js        status | batches | config | feed | feed:read | feed:append
-                publish <archive> | update <archive>
+                publish <archive> | update <archive> | recover <owner> <topic> <outdir>
 scripts/
   build.js      node --check gate over src/scripts/tests
   init-feed.js  local-dev identity setup (key → .env, owner+topic → feed.json)
@@ -57,6 +59,9 @@ tests/
                       determinism, malformed rejection, multi-chunk fixture)
   publish.test.js     offline publish proofs (postage, upload, ref-not-bytes)
                       + BLOCKED-gated live publication tests
+  recovery.test.js    offline stranger proofs (empty feed, manifest,
+                      malformed, traversal, multi-file, delete-the-app)
+                      + BLOCKED-gated live recovery tests
   integration.test.js gated on live Bee (skips when down)
 ```
 
@@ -273,25 +278,60 @@ Where full rollback is impossible (content already stored), the error message
 states exactly what succeeded and what remains — partial state is never
 presented as success.
 
-## Recovery preparation
+## Public recovery
 
-Phase 4 will recover using only public identifiers, with no access to the
-publisher's machine:
+A stranger needs exactly two public values — **owner + topic** — plus any
+Bee endpoint. Recovery (`src/recovery.js: recoverArchive`) is read-only:
 
 ```text
-owner + topic (feed.json)
-      ↓  reader.downloadReference()
+Owner + Topic
+     ↓  reader.downloadReference() — latest network update, no index arg
 archive reference
-      ↓  bee.data.download(ref)
-manifest JSON (parse + validate)
-      ↓  per-item bee.data.download(item.reference)
-archive contents
+     ↓  bee.data.download(archiveReference)
+manifest JSON (parsed + validated by the existing archive logic)
+     ↓  bee.data.download(item.reference) for EVERY item
+folio bytes (size-checked against the manifest, sha256-recorded)
 ```
 
-This already works end-to-end against the offline doubles
-(`tests/publish.test.js`: "recoverable from its reference alone"); the live
-retrieval test (`reads the feed and retrieves the referenced manifest`) is
-BLOCKED until Bee is available.
+```bash
+npm run recover -- <owner> <topic> <output-directory>
+```
+
+The CLI prints staged progress and only prints `Recovery complete.` after
+every network read and validation succeeds. Recovery loads no
+`FEED_PRIVATE_KEY`, needs no postage batch (reads are free), computes no
+feed index, and consults no local archive, cache, or state file. Identifier
+strings (`"<owner> <topic>"`, `"<owner>/<topic>"`, or JSON) are accepted as
+convenience spellings of the same owner + topic semantics — never a URL.
+
+## Delete-the-app scenario
+
+Tsering can hand someone `owner + topic`, then delete the application, and
+that person still retrieves every folio: the recovery path intentionally
+depends only on published identifiers and public network data — never on
+the private feed key, `.env`, `feed.json`, a remembered index, the original
+archive directory, or any upload cache. This is proven by the offline
+delete-the-app test (`tests/recovery.test.js`): publish into a simulated
+network, erase the originals and the key, hand a fresh client only
+`{ owner, topic }`, and verify every folio byte-for-byte.
+
+## Live verification
+
+* **Offline recovery tests** (`tests/recovery.test.js`, 12 suites): empty
+  feed, manifest recovery, malformed manifests, bad item refs, every-folio
+  retrieval + order, no-key/no-state proofs, identifier parsing, path
+  traversal, multi-file reconstruction, delete-the-app — all PASS.
+* **Live recovery tests** (same file, gated): end-to-end recovery from the
+  tracked identity, plus a full live delete-the-app cycle behind the
+  explicit `TSERING_LIVE_RECOVERY=1` opt-in (publishing side needs
+  `FEED_PRIVATE_KEY` + `POSTAGE_BATCH_ID`; the recovery side uses neither).
+* **Blocked live tests**: with no Bee at `localhost:1633` they report
+  `BLOCKED — Bee unreachable`, an empty feed reports `BLOCKED — feed has no
+  published archive`, and missing publish credentials report `BLOCKED — no
+  live publication available`. No mocked result is ever reported as live.
+
+Persistence is NOT claimed until real Bee publication and independent
+retrieval have been verified against a live network.
 
 ## Local development vs real Swarm integration
 
@@ -309,6 +349,7 @@ BLOCKED until Bee is available.
 | `node src/cli.js feed:append <ref>` | ❌ needs Bee + key + postage | ✅ network-indexed append |
 | `npm run publish -- <archive>` | ❌ needs Bee + key + postage | ✅ content+manifest upload, feed stores ref |
 | `npm run update -- <archive>` | ❌ needs Bee + key + postage | ✅ same safe-append path, new manifest ref |
+| `npm run recover -- <owner> <topic> <outdir>` | ❌ needs Bee (no key, no postage) | ✅ every folio from owner+topic only |
 | publish (file→ref) / manifest | ✅ offline build/validate works; live upload needs Bee | ✅ same |
 
 ## Security model
@@ -338,6 +379,7 @@ node src/cli.js feed:read      # needs live Bee
 node src/cli.js feed:append <64-hex-ref>  # needs live Bee + key + postage
 npm run publish -- <archive>   # needs live Bee + key + postage
 npm run update -- <archive>    # needs live Bee + key + postage
+npm run recover -- <owner> <topic> <outdir>  # needs live Bee; no key, no postage
 node src/cli.js status     # needs live Bee
 node src/cli.js batches    # needs live Bee
 npm run check:bee
@@ -347,11 +389,14 @@ npm run check:batch
 Live feed-mutating tests (real publication/update) additionally require
 `TSERING_LIVE_PUBLISH=1` as an explicit opt-in, plus `FEED_PRIVATE_KEY` and
 `POSTAGE_BATCH_ID` — otherwise they report BLOCKED like all other live tests.
+The live delete-the-app recovery cycle likewise requires
+`TSERING_LIVE_RECOVERY=1`.
 
 ## What is NOT here (on purpose)
 
 * No hard-coded references, owners, topics, or batch ids.
-* No live network publication claims — real publish/update against Bee is
-  implemented but UNVERIFIED (no Bee node reachable in this phase).
+* No live network publication/recovery claims — real publish/update/recover
+  against Bee are implemented but UNVERIFIED (no Bee node reachable in this
+  phase).
 * No `^13.x` ranges — exact pins for reproducibility.
 * No commits made by setup — review `git status` before committing.
