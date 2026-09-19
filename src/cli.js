@@ -6,6 +6,7 @@ import { createBeeClient } from './bee.js'
 import { readNodeStatus, formatStatusSummary } from './status.js'
 import { selectUsableBatch, formatBatchSummary } from './postage.js'
 import { loadFeedIdentity, readLatestEntry, appendReference } from './feed.js'
+import { publishArchive } from './publish.js'
 
 const USAGE = `Tsering Archive CLI (foundation)
 
@@ -16,6 +17,8 @@ Usage:
   node src/cli.js feed              Print tracked feed identity topic+owner (no network)
   node src/cli.js feed:read         Read latest feed entry (needs Bee up)
   node src/cli.js feed:append <ref> Append 64-hex Swarm ref to feed (needs Bee + key + postage)
+  node src/cli.js publish <archive> Publish an archive file/dir to Swarm + feed (needs Bee + key + postage)
+  node src/cli.js update <archive>  Publish a new archive version to Swarm + feed (same safe append)
   node src/cli.js help              Show this help
 `
 
@@ -99,6 +102,58 @@ async function main() {
       reference,
     })
     console.log(`Feed appended. Update reference: ${result.reference.toHex()}`)
+    return
+  }
+
+  if (command === 'publish' || command === 'update') {
+    const [, archivePath] = process.argv.slice(2)
+    if (!archivePath) {
+      console.error(`Usage: node src/cli.js ${command} <archive-file-or-directory>`)
+      process.exitCode = 1
+      return
+    }
+    const { beeApiUrl, feedPrivateKey, postageBatchId } = loadConfig()
+    if (!feedPrivateKey) {
+      console.error('Error: FEED_PRIVATE_KEY is required for publishing (feed writes must be signed).')
+      process.exitCode = 1
+      return
+    }
+    const identity = loadFeedIdentity()
+    const bee = createBeeClient(beeApiUrl)
+    try {
+      const result = await publishArchive({
+        bee,
+        archivePath,
+        postageBatchId,
+        topic: identity.topic,
+        owner: identity.owner,
+        privateKey: feedPrivateKey,
+      })
+      console.log(command === 'publish' ? 'Tsering Archive Published' : 'Tsering Archive Updated')
+      console.log('')
+      console.log('Feed Owner:')
+      console.log(identity.owner)
+      console.log('')
+      console.log('Feed Topic:')
+      console.log(identity.topic)
+      console.log('')
+      console.log('Archive Reference:')
+      console.log(result.archiveReference)
+      console.log('')
+      console.log('Feed Index:')
+      console.log(result.feedIndex ?? 'unknown (feed write succeeded; index read-back unavailable)')
+      console.log('')
+      console.log('Postage:')
+      console.log(result.batchId)
+      console.log('')
+      console.log(`Items: ${result.itemCount}`)
+    } catch (error) {
+      console.error(`Error: ${error?.message ?? error}`)
+      if (error?.partial) {
+        console.error(`Partial state: ${JSON.stringify(error.partial, null, 2)}`)
+      }
+      process.exitCode = 1
+    }
     return
   }
 
