@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "topic": "tsering-archive-v1",
+  "owner": "0efce8fd951e48ab7ff28bac5e7f7f031d36c5f6",
+  "notes": "Local-development feed identity. Public owner+topic are tracked here; the private key lives ONLY in untracked .env as FEED_PRIVATE_KEY. A production deployment MUST generate a fresh keypair and update owner."
+}

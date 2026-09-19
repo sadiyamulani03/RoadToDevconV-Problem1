@@ -5,14 +5,18 @@ import { loadConfig } from './config.js'
 import { createBeeClient } from './bee.js'
 import { readNodeStatus, formatStatusSummary } from './status.js'
 import { selectUsableBatch, formatBatchSummary } from './postage.js'
+import { loadFeedIdentity, readLatestEntry, appendReference } from './feed.js'
 
 const USAGE = `Tsering Archive CLI (foundation)
 
 Usage:
-  node src/cli.js status        Read live Bee node status (needs Bee up)
-  node src/cli.js batches       List live postage batches (needs Bee up)
-  node src/cli.js config        Print resolved config (no network)
-  node src/cli.js help          Show this help
+  node src/cli.js status            Read live Bee node status (needs Bee up)
+  node src/cli.js batches           List live postage batches (needs Bee up)
+  node src/cli.js config            Print resolved config (no network)
+  node src/cli.js feed              Print tracked feed identity topic+owner (no network)
+  node src/cli.js feed:read         Read latest feed entry (needs Bee up)
+  node src/cli.js feed:append <ref> Append 64-hex Swarm ref to feed (needs Bee + key + postage)
+  node src/cli.js help              Show this help
 `
 
 async function main() {
@@ -57,6 +61,44 @@ async function main() {
     }
     const usable = selectUsableBatch(batches)
     console.log(usable ? 'Usable batch available.' : 'No usable batch with remaining space.')
+    return
+  }
+
+  if (command === 'feed') {
+    console.log(JSON.stringify(loadFeedIdentity(), null, 2))
+    return
+  }
+
+  if (command === 'feed:read') {
+    const { beeApiUrl } = loadConfig()
+    const identity = loadFeedIdentity()
+    const bee = createBeeClient(beeApiUrl)
+    const entry = await readLatestEntry(bee, identity)
+    if (entry.status === 'empty') {
+      console.log('Feed is empty — no updates published yet. First publication will use index 0.')
+      return
+    }
+    console.log(JSON.stringify(entry, null, 2))
+    return
+  }
+
+  if (command === 'feed:append') {
+    const [, reference] = process.argv.slice(2)
+    if (!reference) {
+      console.error('Usage: node src/cli.js feed:append <64-hex-swarm-reference>')
+      process.exitCode = 1
+      return
+    }
+    const { beeApiUrl, feedPrivateKey, postageBatchId } = loadConfig()
+    const identity = loadFeedIdentity()
+    const bee = createBeeClient(beeApiUrl)
+    const result = await appendReference(bee, {
+      topic: identity.topic,
+      privateKey: feedPrivateKey,
+      postageBatchId,
+      reference,
+    })
+    console.log(`Feed appended. Update reference: ${result.reference.toHex()}`)
     return
   }
 

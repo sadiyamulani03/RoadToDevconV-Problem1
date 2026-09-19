@@ -3,9 +3,10 @@
 Minimal, auditable foundation for a censorship-resistant testimony archive on
 [ETHSwarm](https://ethswarm.org), built on `bee-js` **v13** (namespaced API).
 
-> Phase 1 scope: project foundation only. No publishing, no feed writes, no
-> postage purchases are implemented yet. Nothing here fakes a feed address,
-> reference, or batch value.
+> Phase 2 scope: Swarm Feed core (identity, safe append, reader, empty-feed
+> handling). Content publishing and manifests are still to come. Nothing here
+> fakes a feed address, reference, or batch value; network tests report
+> BLOCKED instead of pretending PASS.
 
 ## Problem
 
@@ -24,24 +25,28 @@ publish (file → Swarm ref) → feed append (owner+topic, sequential index)
 
 with honest postage/status reporting throughout.
 
-## Architecture (Phase 1)
+## Architecture (Phase 2)
 
 ```text
+feed.json       TRACKED public identity: topic + owner (no secrets)
 src/
   config.js     env + validation (BEE_API_URL, FEED_*, POSTAGE_BATCH_ID)
   bee.js        Bee client factory (new Bee(url), no I/O)
-  feed.js       v13 feed helpers: makeReader/makeWriter, resolveNextIndex
+  feed.js       v13 feed core: loadFeedIdentity, readLatestEntry,
+                resolveNextIndex, appendReference (safe append, no index arg)
   archive.js    pure payload build/parse (no network)
   recovery.js   live fetch wrapper + pure summary formatter
   postage.js    pure batch select/format over real stamp data
   status.js     live node status aggregation (status.* + connectivity.*)
-  cli.js        status | batches | config | help (no simulation)
+  cli.js        status | batches | config | feed | feed:read | feed:append
 scripts/
   build.js      node --check gate over src/scripts/tests
+  init-feed.js  local-dev identity setup (key → .env, owner+topic → feed.json)
   check-bee.js  live /health/readiness/versions/topology probe
   check-batch.js live stamp.getAll() probe
 tests/
   unit.test.js        offline, deterministic (node:test)
+  feed.test.js        offline proofs + BLOCKED-gated live feed tests
   integration.test.js gated on live Bee (skips when down)
 ```
 
@@ -74,6 +79,34 @@ Default: `http://localhost:1633` (`BEE_API_URL`, see `.env.example`).
 cp .env.example .env   # then fill real values; never commit .env
 ```
 
+## Feed identity (Phase 2)
+
+```text
+Archive → Swarm upload → Archive reference → Swarm Feed → Owner + Topic
+```
+
+* **Topic** (deterministic, documented): `tsering-archive-v1`, stored in
+  tracked `feed.json`. Reproduced by `npm run feed:init`.
+* **Owner** (public address, no private key needed to read): stored in tracked
+  `feed.json`. Reading (`feed:read`) requires only owner + topic.
+* **Private key**: lives ONLY in untracked `.env` as `FEED_PRIVATE_KEY`
+  (created by `npm run feed:init`, local-dev keypair). Writing requires it;
+  nothing in the repo exposes it — `feed.json` is asserted secret-free in tests.
+* Production MUST generate a fresh keypair and update `feed.json` owner.
+
+### Safe append rule (next index is always network-derived)
+
+Verified against installed `@ethersphere/bee-js@13.1.0`
+(`dist/mjs/feed/index.js`): `updateFeedWithReference` computes
+`options?.index ?? (await findNextIndex(...))` — i.e. omitting `index` makes
+the SDK fetch the latest update over the network and use `feedIndexNext`
+(or `0` on empty feed) immediately before the write. Therefore
+`appendReference()` calls `writer.uploadReference(batchId, ref)` with **no
+index argument**. Explicit indexes, local counters, `index++`, `localStorage`,
+and JSON index files are forbidden (static-audited; see Phase 2 report).
+Single-publisher assumption: the lookup is read-then-write, not atomic, so
+concurrent writers could race — out of scope for this archive.
+
 ## Current network limitation (honest status)
 
 As of Phase 1 verification, **no Bee node answers at `localhost:1633`**
@@ -98,7 +131,10 @@ Do not interpret skipped/failed live checks as passing integration.
 | `node src/cli.js config` | ✅ no network | ✅ |
 | `node src/cli.js status` | ❌ `Bee unreachable` | ✅ live status |
 | `node src/cli.js batches` | ❌ `Bee unreachable` | ✅ live batches |
-| publish / feed write / manifest | 🚫 not implemented (Phase 2) | 🚫 same |
+| `node src/cli.js feed` | ✅ reads tracked feed.json | ✅ |
+| `node src/cli.js feed:read` | ❌ `Bee unreachable` | ✅ live entry or `empty` |
+| `node src/cli.js feed:append <ref>` | ❌ needs Bee + key + postage | ✅ network-indexed append |
+| publish (file→ref) / manifest | 🚫 not implemented (later phase) | 🚫 same |
 
 ## Security model
 
@@ -118,9 +154,13 @@ Do not interpret skipped/failed live checks as passing integration.
 ```bash
 npm install        # exact pinned install
 npm run build      # syntax gate (node --check over src/scripts/tests)
-npm test           # node --test (unit always; integration skips w/o Bee)
+npm test           # offline proofs pass; live tests SKIP as BLOCKED w/o Bee
+npm run feed:init  # local-dev feed identity (key → .env, owner+topic → feed.json)
 node src/cli.js help
 node src/cli.js config
+node src/cli.js feed           # tracked identity, no network
+node src/cli.js feed:read      # needs live Bee
+node src/cli.js feed:append <64-hex-ref>  # needs live Bee + key + postage
 node src/cli.js status     # needs live Bee
 node src/cli.js batches    # needs live Bee
 npm run check:bee
