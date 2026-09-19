@@ -43,9 +43,11 @@ src/
   recovery.js   stranger recovery: recoverArchive / recoverArchiveToDirectory
                 (owner+topic → feed → manifest → every folio; read-only,
                 key-free, path-safe) + pure summary formatter
-  postage.js    pure batch select/format over real stamp data
+  postage.js    node-derived status (getPostageStatus: NO_POSTAGE /
+                NO_USABLE_POSTAGE / USABLE), batchTTL-seconds lifetime,
+                strict validation — never invents batches or lifetimes
   status.js     live node status aggregation (status.* + connectivity.*)
-  cli.js        status | batches | config | feed | feed:read | feed:append
+  cli.js        status | batches | postage | config | feed | feed:read | feed:append
                 publish <archive> | update <archive> | recover <owner> <topic> <outdir>
 scripts/
   build.js      node --check gate over src/scripts/tests
@@ -62,6 +64,9 @@ tests/
   recovery.test.js    offline stranger proofs (empty feed, manifest,
                       malformed, traversal, multi-file, delete-the-app)
                       + BLOCKED-gated live recovery tests
+  postage.test.js     offline postage proofs (states, configured-batch
+                      validation, seconds-lifetime, utilization, publish
+                      gating, no invented batches) + BLOCKED-gated live test
   integration.test.js gated on live Bee (skips when down)
 ```
 
@@ -247,10 +252,52 @@ reaches the feed as a single 32-byte reference.
 
 ## Postage
 
-Every upload (file bytes, manifest bytes, feed update) spends postage, so a
-usable funded batch with remaining space is required. Resolution order:
+A postage batch is Swarm's prepaid storage lease: every upload (file bytes,
+manifest bytes, feed update chunk) spends batch capacity, and content stays
+pinned only while its batch lives. Publication therefore requires a **usable
+funded batch with remaining space** — reads (status, recovery) need none.
 
-1. `POSTAGE_BATCH_ID` if configured — verified live, never assumed.
+Discovery is exclusively node-derived: `bee.stamp.getAll()` (verified
+bee-js 13.1.0) returns live `PostageBatch` entries — `batchID` (64-hex),
+`usable` (boolean), `utilization`/`usage`/`usageText`, `depth`,
+`bucketDepth`, `blockNumber`, `amount`, plus `duration` and
+`remainingSize`. No batch id is ever invented or hard-coded, and a
+configured `POSTAGE_BATCH_ID` is validated against the live list before
+use — a configured value alone proves nothing.
+
+Remaining lifetime comes straight from the node: Bee reports `batchTTL`
+per batch, which bee-js exposes as `batch.duration` in **seconds** (see
+`dist/mjs/utils/stamps.js`: `Duration.fromSeconds(batchTTL)`). The project
+reports those seconds first (`86400s`) with an explicitly labeled day
+estimate (`~about 1 day, estimated from node seconds`) — blocks are never
+confused with days, and no calendar expiry is claimed beyond the node's
+seconds. A missing duration renders as `unknown`, never a guess.
+
+`npm run postage` (read-only, spends nothing) distinguishes three states:
+
+```text
+Bee: unreachable at http://localhost:1633   # node down — NOT "no postage"
+Cannot determine postage state.
+```
+
+```text
+Bee: reachable at …
+Batches discovered: 0                        # NO_POSTAGE
+Publishing is blocked until a usable postage batch is available.
+```
+
+```text
+Bee: reachable at …
+Batches discovered: N                        # USABLE or NO_USABLE_POSTAGE
+Batch: …
+Usable: yes/no
+Remaining lifetime: …
+Utilization: …
+```
+
+Resolution order for publishing (before ANY upload is attempted):
+
+1. `POSTAGE_BATCH_ID` if configured — must be found live and `usable`.
 2. Otherwise the first `usable === true` batch with remaining space.
 3. Otherwise hard failure:
 
@@ -259,8 +306,11 @@ No usable postage batch is available.
 Fund a Bee postage batch before publishing.
 ```
 
-No batch id is ever invented or hard-coded; `bee.stamp.getAll()` is the only
-source of truth.
+Never claim the archive is permanently persisted: Swarm guarantees storage
+only for the batch's remaining lifetime, so persistence holds while a
+funding batch with reported remaining seconds covers the content — check
+`npm run postage` for the observed values. No live batch has been observed
+in this environment yet.
 
 ## Failure states
 
@@ -344,6 +394,7 @@ retrieval have been verified against a live network.
 | `node src/cli.js config` | ✅ no network | ✅ |
 | `node src/cli.js status` | ❌ `Bee unreachable` | ✅ live status |
 | `node src/cli.js batches` | ❌ `Bee unreachable` | ✅ live batches |
+| `npm run postage` | ❌ `Bee unreachable` (distinct from no-postage) | ✅ node-derived status + lifetimes |
 | `node src/cli.js feed` | ✅ reads tracked feed.json | ✅ |
 | `node src/cli.js feed:read` | ❌ `Bee unreachable` | ✅ live entry or `empty` |
 | `node src/cli.js feed:append <ref>` | ❌ needs Bee + key + postage | ✅ network-indexed append |
@@ -381,7 +432,8 @@ npm run publish -- <archive>   # needs live Bee + key + postage
 npm run update -- <archive>    # needs live Bee + key + postage
 npm run recover -- <owner> <topic> <outdir>  # needs live Bee; no key, no postage
 node src/cli.js status     # needs live Bee
-node src/cli.js batches    # needs live Bee
+node src/cli.js batches    # needs live Bee (raw batch list)
+npm run postage            # needs live Bee; read-only status + lifetimes
 npm run check:bee
 npm run check:batch
 ```
@@ -390,13 +442,14 @@ Live feed-mutating tests (real publication/update) additionally require
 `TSERING_LIVE_PUBLISH=1` as an explicit opt-in, plus `FEED_PRIVATE_KEY` and
 `POSTAGE_BATCH_ID` — otherwise they report BLOCKED like all other live tests.
 The live delete-the-app recovery cycle likewise requires
-`TSERING_LIVE_RECOVERY=1`.
+`TSERING_LIVE_RECOVERY=1`, and the live postage read requires
+`TSERING_LIVE_POSTAGE=1`.
 
 ## What is NOT here (on purpose)
 
 * No hard-coded references, owners, topics, or batch ids.
-* No live network publication/recovery claims — real publish/update/recover
-  against Bee are implemented but UNVERIFIED (no Bee node reachable in this
-  phase).
+* No live network publication/recovery/postage claims — real publish/update/
+  recover/postage reads against Bee are implemented but UNVERIFIED (no Bee
+  node reachable in this phase).
 * No `^13.x` ranges — exact pins for reproducibility.
 * No commits made by setup — review `git status` before committing.

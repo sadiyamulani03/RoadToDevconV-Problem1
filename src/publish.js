@@ -29,14 +29,10 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { buildArchiveManifest } from './archive.js'
 import { appendReference, readLatestEntry } from './feed.js'
-import { selectUsableBatch, findBatchById } from './postage.js'
+import { getPostageStatus } from './postage.js'
 
 export const NO_POSTAGE_MESSAGE =
   'No usable postage batch is available.\nFund a Bee postage batch before publishing.'
-
-function batchIdToString(batch) {
-  return String(batch?.batchID?.toString?.() ?? batch?.batchID ?? '').toLowerCase()
-}
 
 /**
  * Read an archive input path into ordered file entries.
@@ -85,36 +81,36 @@ function readEntry(fullPath, name) {
 }
 
 /**
- * Resolve a usable postage batch id against the LIVE node.
- * - When postageBatchId is configured, it must exist on the node, be
- *   usable, and have remaining space — otherwise throw (never silently
- *   fall back to another batch, never invent one).
- * - When unconfigured, auto-select the first usable batch with space.
+ * Resolve a usable postage batch id against the LIVE node via the shared
+ * getPostageStatus() interpreter (single source of truth with the `postage`
+ * CLI command). Runs BEFORE any upload in publishArchive, so no content is
+ * stored before postage is confirmed.
+ * - When postageBatchId is configured, it must exist on the node and be
+ *   usable — otherwise throw (never silently fall back, never invent one).
+ * - When unconfigured, use the first usable batch with space.
  * - When the node reports no usable batch, throw NO_POSTAGE_MESSAGE.
- * Bee errors (node down, etc.) propagate unchanged.
+ * - When Bee is down, the BLOCKED unreachable error propagates unchanged.
  */
 export async function resolvePublishBatchId(bee, postageBatchId) {
-  const batches = await bee.stamp.getAll()
+  const status = await getPostageStatus({ bee, postageBatchId })
   const configured = typeof postageBatchId === 'string' ? postageBatchId.trim() : ''
   if (configured !== '') {
-    const match = findBatchById(batches, configured)
-    if (!match) {
+    if (!status.configured?.found) {
       throw new Error(
         `Configured postage batch ${configured} was not found on this Bee node.\nFund a Bee postage batch before publishing.`,
       )
     }
-    if (match.usable !== true) {
+    if (!status.configured.usable) {
       throw new Error(
-        `Postage batch ${configured} is not usable (usable=${match.usable}).\nFund a Bee postage batch before publishing.`,
+        `Postage batch ${configured} is not usable (usable=false).\nFund a Bee postage batch before publishing.`,
       )
     }
     return configured.toLowerCase()
   }
-  const usable = selectUsableBatch(batches)
-  if (!usable) {
+  if (!status.usable) {
     throw new Error(NO_POSTAGE_MESSAGE)
   }
-  const id = batchIdToString(usable)
+  const id = status.usable.batchId
   if (!/^[0-9a-f]{64}$/.test(id)) {
     throw new Error(`${NO_POSTAGE_MESSAGE}\n(Node reported a batch with an unexpected id format.)`)
   }

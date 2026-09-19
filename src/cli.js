@@ -4,7 +4,7 @@
 import { loadConfig } from './config.js'
 import { createBeeClient } from './bee.js'
 import { readNodeStatus, formatStatusSummary } from './status.js'
-import { selectUsableBatch, formatBatchSummary } from './postage.js'
+import { selectUsableBatch, formatBatchSummary, getPostageStatus } from './postage.js'
 import { loadFeedIdentity, readLatestEntry, appendReference } from './feed.js'
 import { publishArchive } from './publish.js'
 import { recoverArchiveToDirectory } from './recovery.js'
@@ -21,6 +21,7 @@ Usage:
   node src/cli.js publish <archive> Publish an archive file/dir to Swarm + feed (needs Bee + key + postage)
   node src/cli.js update <archive>  Publish a new archive version to Swarm + feed (same safe append)
   node src/cli.js recover <owner> <topic> <outdir>  Recover every folio from owner+topic (needs Bee; no key, no postage)
+  node src/cli.js postage           Show node-derived postage status (needs Bee; read-only)
   node src/cli.js help              Show this help
 `
 
@@ -206,6 +207,62 @@ async function main() {
       if (error?.partial) {
         console.error(`Partial state: ${JSON.stringify(error.partial, null, 2)}`)
       }
+      process.exitCode = 1
+    }
+    return
+  }
+
+  if (command === 'postage') {
+    // Read-only postage status: node-derived batches, lifetime, usability.
+    // No key, no purchase, no top-up — this command never spends anything.
+    const { beeApiUrl, postageBatchId } = loadConfig()
+    const bee = createBeeClient(beeApiUrl)
+    console.log('Swarm Postage Status')
+    console.log('')
+    try {
+      const status = await getPostageStatus({ bee, postageBatchId })
+      console.log(`Bee: reachable at ${status.beeUrl}`)
+      console.log('')
+      console.log(`Batches discovered: ${status.batchCount}`)
+      if (status.state === 'NO_POSTAGE') {
+        console.log('')
+        console.log('No postage batches found on this Bee node.')
+        console.log('')
+        console.log('Publishing is blocked until a usable postage batch is available.')
+        return
+      }
+      for (const entry of status.batches) {
+        console.log('')
+        console.log(`Batch: ${entry.batchId}`)
+        console.log(`Usable: ${entry.usable ? 'yes' : 'no'}`)
+        console.log(`Remaining lifetime: ${entry.lifetimeHuman}`)
+        console.log(`Utilization: ${entry.usageText}${Number.isFinite(entry.usage) ? ` (${entry.usage})` : ''}`)
+        console.log(`Depth: ${Number.isFinite(entry.depth) ? entry.depth : 'unknown'}`)
+        console.log(`Remaining size: ${Number.isFinite(entry.remainingBytes) ? `${entry.remainingBytes} bytes` : 'unknown'}`)
+      }
+      if (status.configured) {
+        console.log('')
+        console.log(
+          `Configured batch ${status.configured.batchId}: ` +
+            (status.configured.found
+              ? `found, usable=${status.configured.usable}, hasSpace=${status.configured.hasSpace}`
+              : 'NOT FOUND on this Bee node — a configured value alone proves nothing.'),
+        )
+      }
+      console.log('')
+      if (status.state === 'USABLE') {
+        console.log(`Usable batch available: ${status.usable.batchId}`)
+      } else {
+        console.log('No usable postage batch found.')
+        console.log('')
+        console.log('Publishing is blocked until a usable postage batch is available.')
+      }
+    } catch (error) {
+      // A down node is NOT "no postage" — report reachability distinctly.
+      console.log(`Bee: unreachable at ${beeApiUrl}`)
+      console.log('')
+      console.log('Cannot determine postage state.')
+      console.error(`Error: ${error?.message ?? error}`)
       process.exitCode = 1
     }
     return

@@ -8,11 +8,12 @@
   },
   "scripts": {
     "build": "node scripts/build.js",
-    "test": "node --test tests/unit.test.js tests/feed.test.js tests/archive.test.js tests/publish.test.js tests/recovery.test.js tests/integration.test.js",
+    "test": "node --test tests/unit.test.js tests/feed.test.js tests/archive.test.js tests/publish.test.js tests/recovery.test.js tests/postage.test.js tests/integration.test.js",
     "cli": "node src/cli.js",
     "publish": "node src/cli.js publish",
     "update": "node src/cli.js update",
     "recover": "node src/cli.js recover",
+    "postage": "node src/cli.js postage",
     "feed:init": "node scripts/init-feed.js",
     "check:bee": "node scripts/check-bee.js",
     "check:batch": "node scripts/check-batch.js"
