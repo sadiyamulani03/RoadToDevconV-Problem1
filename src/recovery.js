@@ -115,10 +115,14 @@ function sha256Hex(bytes) {
  * the manifest, then downloads + verifies EVERY folio.
  * Returns { owner, topic, archiveReference, feedIndex, manifest,
  *            items: [{ id, name, reference, size, digest, data }] }.
+ * Optional progress callbacks (all additive, safe to omit):
+ *   onFeedResolved({ archiveReference, feedIndex }) — after feed resolution
+ *   onManifest({ manifest, archiveReference })      — after manifest validation
+ *   onItem({ index, total, id, name, reference })   — before each folio fetch
  * Throws stage-tagged errors (feed empty / manifest / item) — Bee errors
  * propagate as `cause`, never masked.
  */
-export async function recoverArchive({ bee, owner, topic, onItem } = {}) {
+export async function recoverArchive({ bee, owner, topic, onItem, onFeedResolved, onManifest } = {}) {
   const cleanOwner = assertOwner(owner)
   const cleanTopic = assertTopic(topic)
 
@@ -140,6 +144,10 @@ export async function recoverArchive({ bee, owner, topic, onItem } = {}) {
   if (!isValidSwarmReference(archiveReference)) {
     throw new Error(`Feed update for topic ${JSON.stringify(cleanTopic)} holds an invalid archive reference: ${JSON.stringify(archiveReference)}`)
   }
+  const feedIndex = latest.feedIndex.toBigInt().toString()
+  if (typeof onFeedResolved === 'function') {
+    onFeedResolved({ archiveReference, feedIndex })
+  }
 
   let manifestText
   try {
@@ -157,6 +165,9 @@ export async function recoverArchive({ bee, owner, topic, onItem } = {}) {
     const wrapped = new Error(`Downloaded manifest at ${archiveReference} is invalid: ${error.message}`)
     wrapped.cause = error
     throw wrapped
+  }
+  if (typeof onManifest === 'function') {
+    onManifest({ manifest, archiveReference })
   }
 
   const items = []
@@ -196,7 +207,7 @@ export async function recoverArchive({ bee, owner, topic, onItem } = {}) {
     owner: cleanOwner,
     topic: cleanTopic,
     archiveReference,
-    feedIndex: latest.feedIndex.toBigInt().toString(),
+    feedIndex,
     manifest,
     items,
   }
@@ -238,11 +249,11 @@ export function safeOutputPath(outputDir, name) {
  * (pass { overwrite: true } to opt in explicitly).
  * Returns { ..., outputDir, files: [absolutePaths], recoveredCount }.
  */
-export async function recoverArchiveToDirectory({ bee, owner, topic, outputDir, overwrite = false, onItem } = {}) {
+export async function recoverArchiveToDirectory({ bee, owner, topic, outputDir, overwrite = false, onItem, onFeedResolved, onManifest } = {}) {
   if (typeof outputDir !== 'string' || outputDir.trim() === '') {
     throw new Error('Output directory must be a non-empty string.')
   }
-  const result = await recoverArchive({ bee, owner, topic, onItem })
+  const result = await recoverArchive({ bee, owner, topic, onItem, onFeedResolved, onManifest })
   mkdirSync(outputDir, { recursive: true })
   const files = []
   for (const item of result.items) {

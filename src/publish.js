@@ -120,15 +120,20 @@ export async function resolvePublishBatchId(bee, postageBatchId) {
 /**
  * Upload archive entries then the manifest, all via bee.data.upload.
  * Returns { items, manifestText, archiveReference }.
+ * Optional onStage(stage, detail) progress callback — additive, safe to
+ * omit. Stages: 'folios' { total }, 'manifest' { itemCount }.
  * On failure, the thrown error carries `partial` describing what DID land
  * on Swarm, so operators can distinguish "nothing uploaded" from
  * "content is live but the manifest/feed step still needs a retry".
  */
-export async function uploadArchiveContent({ bee, batchId, entries, manifestName, updatedAt }) {
+export async function uploadArchiveContent({ bee, batchId, entries, manifestName, updatedAt, onStage }) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new Error('Cannot upload an archive with no entries.')
   }
   const items = []
+  if (typeof onStage === 'function') {
+    onStage('folios', { total: entries.length })
+  }
   for (const entry of entries) {
     let result
     try {
@@ -150,6 +155,9 @@ export async function uploadArchiveContent({ bee, batchId, entries, manifestName
     })
   }
   const manifestText = buildArchiveManifest({ name: manifestName, items, updatedAt })
+  if (typeof onStage === 'function') {
+    onStage('manifest', { itemCount: items.length })
+  }
   let manifestResult
   try {
     manifestResult = await bee.data.upload(batchId, manifestText)
@@ -175,6 +183,11 @@ export async function uploadArchiveContent({ bee, batchId, entries, manifestName
  * Returns public identifiers for display. `owner` is optional; when given,
  * the latest feed entry is read back to report the feed index (a failed
  * read-back does NOT fail the publication — the write already succeeded).
+ * Optional onStage(stage, detail) progress callback — additive, safe to
+ * omit. Stages: 'validated' { archivePath, itemCount }, 'postage'
+ * { batchId }, then 'folios' / 'manifest' (via upload), then 'feed'
+ * { archiveReference } immediately before the feed append. No success is
+ * reported until the feed update itself succeeds.
  */
 export async function publishArchive({
   bee,
@@ -185,21 +198,32 @@ export async function publishArchive({
   privateKey,
   manifestName,
   updatedAt,
+  onStage,
 }) {
   if (typeof topic !== 'string' || topic.length === 0) {
     throw new Error('Feed topic must be a non-empty string.')
   }
   const entries = collectArchiveEntries(archivePath)
+  if (typeof onStage === 'function') {
+    onStage('validated', { archivePath: archivePath.trim(), itemCount: entries.length })
+  }
   const batchId = await resolvePublishBatchId(bee, postageBatchId)
+  if (typeof onStage === 'function') {
+    onStage('postage', { batchId })
+  }
   const { items, manifestText, archiveReference } = await uploadArchiveContent({
     bee,
     batchId,
     entries,
     manifestName,
     updatedAt,
+    onStage,
   })
   let feedResult
   try {
+    if (typeof onStage === 'function') {
+      onStage('feed', { archiveReference })
+    }
     feedResult = await appendReference(bee, {
       topic,
       privateKey,
