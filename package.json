@@ -1,0 +1,21 @@
+{
+  "name": "roadtodevconV-problem1-tsering-archive",
+  "version": "0.1.0",
+  "description": "ETHSwarm Road to Devcon V Problem 1 — Tsering Archive foundation (bee-js v13, no fake publishing)",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "node --test tests/unit.test.js tests/integration.test.js",
+    "cli": "node src/cli.js",
+    "check:bee": "node scripts/check-bee.js",
+    "check:batch": "node scripts/check-batch.js"
+  },
+  "dependencies": {
+    "@ethersphere/bee-js": "13.1.0",
+    "dotenv": "18.0.1"
+  },
+  "license": "MIT"
+}
